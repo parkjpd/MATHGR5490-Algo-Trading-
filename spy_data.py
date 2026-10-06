@@ -87,3 +87,33 @@ def clean_chunks(path, audit, chunksize=250_000):
             yield chunk
     audit["removed"] = dict(removed)
     audit["sale_conditions_raw"] = dict(conditions.most_common())
+
+
+def build_minute_bars(path, chunksize=250_000):
+    audit = {"raw_rows": 0, "kept_rows": 0}
+    parts = []
+    for chunk in clean_chunks(path, audit, chunksize):
+        chunk["bar_time"] = chunk["timestamp"].dt.floor("min")
+        chunk["price_volume"] = chunk["PRICE"] * chunk["SIZE"]
+        parts.append(chunk.groupby("bar_time", sort=True).agg(
+            open=("PRICE", "first"), high=("PRICE", "max"),
+            low=("PRICE", "min"), close=("PRICE", "last"),
+            volume=("SIZE", "sum"), price_volume=("price_volume", "sum"),
+            trades=("PRICE", "size")))
+    if not parts:
+        raise ValueError("No usable SPY trades remain after cleaning.")
+    # A minute can straddle a chunk boundary. Keep the original first/last order.
+    partial = pd.concat(parts)
+    bars = partial.groupby(level=0, sort=True).agg(
+        open=("open", "first"), high=("high", "max"), low=("low", "min"),
+        close=("close", "last"), volume=("volume", "sum"),
+        price_volume=("price_volume", "sum"), trades=("trades", "sum"))
+    bars["vwap"] = bars.pop("price_volume") / bars["volume"]
+    bars.index = bars.index.tz_localize("America/New_York")
+    bars.index.name = "bar_time"
+    audit.update({"bars": len(bars), "sessions": bars.index.normalize().nunique(),
+                  "first_bar": str(bars.index[0]), "last_bar": str(bars.index[-1]),
+                  "timezone": "America/New_York", "bar_minutes": 1})
+    assert audit["raw_rows"] == audit["kept_rows"] + sum(audit["removed"].values())
+    assert bars["trades"].sum() == audit["kept_rows"]
+    return bars, audit
