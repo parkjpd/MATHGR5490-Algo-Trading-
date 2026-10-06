@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+.ipynb_checkpoints/
+.DS_Store
+qykjkjsbk5ycr4qh.csv
+wyibfmmayut9nuxe.csv
+data/cache/
+figures/
+*.html
