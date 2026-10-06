@@ -12,6 +12,7 @@ import pandas as pd
 RAW_NAMES = ("qykjkjsbk5ycr4qh.csv", "wyibfmmayut9nuxe.csv")
 BAR_FILE = Path("data/spy_1min.csv")
 AUDIT_FILE = Path("data/cleaning_audit.json")
+PIPELINE_VERSION = 1
 
 
 def file_hash(path):
@@ -115,5 +116,48 @@ def build_minute_bars(path, chunksize=250_000):
                   "first_bar": str(bars.index[0]), "last_bar": str(bars.index[-1]),
                   "timezone": "America/New_York", "bar_minutes": 1})
     assert audit["raw_rows"] == audit["kept_rows"] + sum(audit["removed"].values())
+    assert bars["trades"].sum() == audit["kept_rows"]
+    return bars, audit
+
+
+def validate_bars(bars):
+    assert len(bars) > 0 and bars.index.is_unique and bars.index.is_monotonic_increasing
+    assert str(bars.index.tz) == "America/New_York"
+    assert np.isfinite(bars.to_numpy()).all(), "A bar contains a missing or infinite value."
+    assert bars[["open", "high", "low", "close", "vwap", "volume", "trades"]].gt(0).all().all()
+    assert bars["high"].ge(bars[["open", "close", "low", "vwap"]].max(axis=1)).all()
+    assert bars["low"].le(bars[["open", "close", "high", "vwap"]].min(axis=1)).all()
+    for _, day in bars.groupby(bars.index.normalize()):
+        expected = pd.date_range(day.index[0].normalize() + pd.Timedelta(hours=9, minutes=30),
+                                 periods=390, freq="min")
+        if not day.index.equals(expected):
+            raise ValueError("This sample expects full 390-minute sessions. Check missing minutes or an early close; don't fill prices silently.")
+
+
+def load_bars(root, rebuild=False):
+    root = Path(root)
+    bar_path, audit_path = root / BAR_FILE, root / AUDIT_FILE
+    if not rebuild and bar_path.exists() and audit_path.exists():
+        audit = json.loads(audit_path.read_text())
+        if audit.get("pipeline_version") != PIPELINE_VERSION:
+            raise ValueError("The cache was made with different cleaning rules. Set REBUILD=True.")
+        if file_hash(bar_path) != audit["bar_sha256"]:
+            raise ValueError("The bar CSV changed after it was built. Set REBUILD=True.")
+        bars = pd.read_csv(bar_path, index_col="bar_time")
+        bars.index = pd.to_datetime(bars.index, utc=True).tz_convert("America/New_York")
+        bars.index.name = "bar_time"
+    else:
+        raw, manifest = find_raw_files(root)
+        bars, audit = build_minute_bars(raw)
+        audit.update({"sources": manifest, "source_used": raw.name,
+                      "pipeline_version": PIPELINE_VERSION,
+                      "duplicate_download": len({item["sha256"] for item in manifest}) < len(manifest)})
+        validate_bars(bars)
+        bar_path.parent.mkdir(parents=True, exist_ok=True)
+        bars.to_csv(bar_path)
+        audit["bar_sha256"] = file_hash(bar_path)
+        audit_path.write_text(json.dumps(audit, indent=2) + "\n")
+    validate_bars(bars)
+    assert len(bars) == audit["bars"]
     assert bars["trades"].sum() == audit["kept_rows"]
     return bars, audit
