@@ -27,7 +27,11 @@ def main():
                                 kernel_spec_manager=KernelSpecManager(kernel_dirs=[directory]))
         client = NotebookClient(notebook, km=manager, timeout=120,
                                 resources={"metadata": {"path": str(root)}})
-        client.execute()
+        try:
+            client.execute()
+        finally:
+            if manager.has_kernel:
+                manager.shutdown_kernel(now=True)
     nbformat.validate(notebook)
     nbformat.write(notebook, path)
     code_cells = sum(cell.cell_type == "code" for cell in notebook.cells)
